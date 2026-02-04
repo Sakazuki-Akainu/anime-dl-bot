@@ -8,11 +8,10 @@ import requests
 from pyrogram import Client, filters, idle
 from aiohttp import web
 
-# --- 1. CONFIGURATION ---
+# --- CONFIGURATION ---
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
-
 CHANNEL_1 = int(os.environ.get('CHANNEL_1')) if os.environ.get('CHANNEL_1') else None
 CHANNEL_2 = int(os.environ.get('CHANNEL_2')) if os.environ.get('CHANNEL_2') else None
 
@@ -20,28 +19,21 @@ DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 ACTIVE_TASKS = {}
 
-app = Client(
-    "anime_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workers=4
-)
+app = Client("anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=4)
 
-# --- 2. HEALTH CHECK SERVER (For Koyeb) ---
+# --- HEALTH CHECK (Required for Koyeb) ---
 async def health_check(request):
-    return web.Response(text="Bot is Alive and Running!")
+    return web.Response(text="OK")
 
 async def start_web_server():
     server = web.Application()
     server.router.add_get("/", health_check)
     runner = web.AppRunner(server)
     await runner.setup()
-    # Koyeb expects port 8080
     await web.TCPSite(runner, "0.0.0.0", 8080).start()
-    print("🌍 Health Check Server running on Port 8080")
+    print("🌍 Health Check running on 8080")
 
-# --- 3. JIKAN API ---
+# --- JIKAN API ---
 def get_anime_details(query):
     try:
         url = f"https://api.jikan.moe/v4/anime?q={query}&limit=1"
@@ -49,120 +41,77 @@ def get_anime_details(query):
         data = response.json()
         if data['data']:
             anime = data['data'][0]
-            image_url = anime['images']['jpg']['large_image_url']
-            duration_raw = anime.get('duration', '24 min').replace(" per ep", "")
             return {
                 "title": anime['title'],
                 "native": anime.get('title_japanese', ''),
-                "duration": duration_raw,
-                "url": anime['url'],
-                "image": image_url
+                "duration": anime.get('duration', '24 min').replace(" per ep", ""),
+                "image": anime['images']['jpg']['large_image_url']
             }
     except: pass
     return None
 
-# --- 4. HELPERS ---
 async def consume_stream(process):
     while True:
         line = await process.stdout.readline()
         if not line: break
         print(f"[SHELL] {line.decode().strip()}")
 
-# --- 5. COMMANDS ---
-@app.on_message(filters.command("start"))
-async def start_cmd(client, message):
-    await message.reply("🤖 **Koyeb 360p Anime Bot Ready!**\nUsage: `/dl -a \"Anime Name\" -e 1`")
-
 @app.on_message(filters.command("dl"))
 async def dl_cmd(client, message):
     chat_id = message.chat.id
-    if chat_id in ACTIVE_TASKS: return await message.reply("⚠️ Busy. Wait for current task.")
-
+    if chat_id in ACTIVE_TASKS: return await message.reply("⚠️ Busy.")
+    
     cmd_text = message.text[4:]
     ep_match = re.search(r'-e\s+([\d,-]+)', cmd_text)
     name_match = re.search(r'-a\s+["\']([^"\']+)["\']', cmd_text)
     
-    if not ep_match or not name_match:
-        return await message.reply("Usage: `/dl -a \"One Piece\" -e 1000`")
+    if not ep_match or not name_match: return await message.reply("Usage: `/dl -a \"Title\" -e 1`")
     
     anime_query = name_match.group(1)
     ep_num = ep_match.group(1)
     
-    status_msg = await message.reply("⏳ **Searching & Initializing (360p)...**")
     ACTIVE_TASKS[chat_id] = True
+    status_msg = await message.reply("⏳ **Starting...**")
     
     anime_info = get_anime_details(anime_query)
-    if not anime_info:
-        anime_info = {"title": anime_query, "native": "", "duration": "Unknown", "image": None}
-
-    caption_template = (
-        f"**{anime_info['title']}** | {anime_info['native']}\n"
-        f"Quality: 360p\n"
-        f"Duration: {anime_info['duration']}\n"
-    )
-
+    title = anime_info['title'] if anime_info else anime_query
+    
+    # Post Image
     try:
-        if anime_info['image']: 
-            sent_post = await client.send_photo(chat_id, photo=anime_info['image'], caption=caption_template)
-            for ch_id in [CHANNEL_1, CHANNEL_2]:
-                if ch_id:
-                    try: await sent_post.copy(ch_id)
-                    except: pass
+        if anime_info and anime_info['image']:
+            sent = await client.send_photo(chat_id, photo=anime_info['image'], caption=f"**{title}**\nQuality: 360p")
+            for ch in [CHANNEL_1, CHANNEL_2]:
+                if ch: await sent.copy(ch)
     except: pass
 
-    current_cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} -r 360 2>&1"
-
-    process = await asyncio.create_subprocess_shell(
-        current_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        preexec_fn=os.setsid
-    )
-    
+    # Download
+    cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} -r 360 2>&1"
+    process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, preexec_fn=os.setsid)
     await consume_stream(process)
     await process.wait()
-
+    
+    # Upload
     mp4s = glob.glob("**/*.mp4", recursive=True)
-    
     if not mp4s:
-        await status_msg.edit_text("❌ **Download Failed.** File not found.")
-        if chat_id in ACTIVE_TASKS: del ACTIVE_TASKS[chat_id]
-        return
+        await status_msg.edit_text("❌ Failed to download.")
+    else:
+        file_path = max(mp4s, key=os.path.getctime)
+        await status_msg.edit_text("🚀 Uploading...")
+        sent_vid = await client.send_document(chat_id, file_path, caption=f"**{title} - Ep {ep_num}** [360p]")
+        
+        for ch in [CHANNEL_1, CHANNEL_2]:
+            if ch: await sent_vid.copy(ch)
+            
+        try: os.remove(file_path); shutil.rmtree(os.path.dirname(file_path))
+        except: pass
 
-    file_to_up = max(mp4s, key=os.path.getctime)
-    await status_msg.edit_text("🚀 **Uploading 360p Video...**")
-
-    try:
-        sent_vid = await client.send_document(
-            chat_id, 
-            file_to_up, 
-            caption=f"✅ **{anime_info['title']} - Ep {ep_num}** [360p]"
-        )
-        for ch_id in [CHANNEL_1, CHANNEL_2]:
-            if ch_id:
-                try: await sent_vid.copy(ch_id)
-                except: pass
-
-    except Exception as e:
-        await message.reply(f"Upload Error: {e}")
-
-    try: 
-        os.remove(file_to_up)
-        shutil.rmtree(os.path.dirname(file_to_up))
-    except: pass
-    
-    if chat_id in ACTIVE_TASKS: del ACTIVE_TASKS[chat_id]
+    del ACTIVE_TASKS[chat_id]
     await status_msg.delete()
 
-# --- 6. STARTUP ---
 async def main():
-    print("🤖 Bot Starting on Koyeb...")
-    # Start the Health Check Server first
     await start_web_server()
-    # Then start the Bot
     await app.start()
     await idle()
-    await app.stop()
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
