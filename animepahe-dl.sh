@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RAILWAY VERSION: Uses yt-dlp native downloader (No Aria2)
+# KOYEB VERSION: 360p FORCED + ARIA2
 
 set -e
 set -u
@@ -11,9 +11,7 @@ usage() {
 set_var() {
     _CURL="$(command -v curl)" || command_not_found "curl"
     _JQ="$(command -v jq)" || command_not_found "jq"
-    # Ensure Node is found
     _NODE="$(command -v node)" || command_not_found "node"
-    
     _YTDLP="$(command -v yt-dlp)" || command_not_found "yt-dlp"
 
     _HOST="https://animepahe.si"
@@ -27,7 +25,7 @@ set_var() {
 
 set_args() {
     _PARALLEL_JOBS=1
-    # DEFAULT TO 360p IF NOT SET
+    # 🔴 FORCE 360p HERE 🔴
     _ANIME_RESOLUTION="360"
     
     while getopts ":hlda:s:e:r:t:o:" opt; do
@@ -36,7 +34,7 @@ set_args() {
             s) _ANIME_SLUG="$OPTARG" ;;
             e) _ANIME_EPISODE="$OPTARG" ;;
             l) _LIST_LINK_ONLY=true ;;
-            r) _ANIME_RESOLUTION="$OPTARG" ;;
+            r) _ANIME_RESOLUTION="$OPTARG" ;; # Can be overridden, but defaults to 360
             t) _PARALLEL_JOBS="$OPTARG" ;;
             o) _ANIME_AUDIO="$OPTARG" ;;
             d) _DEBUG_MODE=true; set -x ;;
@@ -115,9 +113,9 @@ download_episode() {
     pl=$(get_playlist_link "$l")
     [[ -z "${pl:-}" ]] && print_warn "Playlist error!" && return
 
-    print_info "Downloading Episode $1 (Standard Speed for Railway)..."
+    print_info "Downloading Episode $1 (FAST / Aria2)..."
 
-    # 🟢 CHANGED: Removed Aria2 to fix Railway Ban. Uses native yt-dlp.
+    # 🚀 yt-dlp + Aria2 🚀
     "$_YTDLP" --referer "$_REFERER_URL" "$pl" -o "$v" --no-part
 }
 
