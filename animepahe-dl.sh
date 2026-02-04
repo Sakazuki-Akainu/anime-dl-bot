@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KOYEB VERSION: 360p FORCED + ARIA2
+# KOYEB VERSION: 360p FORCED + DEBUGGING
 
 set -e
 set -u
@@ -25,7 +25,6 @@ set_var() {
 
 set_args() {
     _PARALLEL_JOBS=1
-    # 🔴 FORCE 360p HERE 🔴
     _ANIME_RESOLUTION="360"
     
     while getopts ":hlda:s:e:r:t:o:" opt; do
@@ -34,7 +33,7 @@ set_args() {
             s) _ANIME_SLUG="$OPTARG" ;;
             e) _ANIME_EPISODE="$OPTARG" ;;
             l) _LIST_LINK_ONLY=true ;;
-            r) _ANIME_RESOLUTION="$OPTARG" ;; # Can be overridden, but defaults to 360
+            r) _ANIME_RESOLUTION="$OPTARG" ;; 
             t) _PARALLEL_JOBS="$OPTARG" ;;
             o) _ANIME_AUDIO="$OPTARG" ;;
             d) _DEBUG_MODE=true; set -x ;;
@@ -100,7 +99,17 @@ get_episode_link() {
 
 get_playlist_link() {
     local s l
-    s="$("$_CURL" --compressed -sS -H "Referer: $_REFERER_URL" -H "cookie: $_COOKIE" "$1" | grep "<script>eval(" | awk -F 'script>' '{print $2}'| sed -E 's/document/process/g' | sed -E 's/querySelector/exit/g' | sed -E 's/eval\(/console.log\(/g')"
+    # Attempt to fetch page
+    local page_content
+    page_content="$("$_CURL" --compressed -sS -H "Referer: $_REFERER_URL" -H "cookie: $_COOKIE" "$1")"
+    
+    # 🔴 DEBUG PRINT: If grep fails, we will see why in logs
+    if ! echo "$page_content" | grep -q "<script>eval("; then
+        echo "[DEBUG] FAILED TO FIND SCRIPT TAG. Page Content Start:" >&2
+        echo "$page_content" | head -n 10 >&2
+    fi
+
+    s="$(echo "$page_content" | grep "<script>eval(" | awk -F 'script>' '{print $2}'| sed -E 's/document/process/g' | sed -E 's/querySelector/exit/g' | sed -E 's/eval\(/console.log\(/g')"
     l="$("$_NODE" -e "$s" | grep 'source=' | sed -E "s/.m3u8';.*/.m3u8/" | sed -E "s/.*const source='//")"
     echo "$l"
 }
@@ -109,13 +118,12 @@ download_episode() {
     local num="$1" l pl v
     v="$_SCRIPT_PATH/${_ANIME_NAME}/${_ANIME_NAME} - Episode ${num}.mp4"
     l=$(get_episode_link "$num")
-    [[ "$l" != *"/"* ]] && print_warn "Link error!" && return
+    [[ "$l" != *"/"* ]] && print_warn "Link error! (Could not find session URL)" && return
+    
     pl=$(get_playlist_link "$l")
-    [[ -z "${pl:-}" ]] && print_warn "Playlist error!" && return
+    [[ -z "${pl:-}" ]] && print_warn "Playlist error! (Could not extract m3u8)" && return
 
     print_info "Downloading Episode $1 (FAST / Aria2)..."
-
-    # 🚀 yt-dlp + Aria2 🚀
     "$_YTDLP" --referer "$_REFERER_URL" "$pl" -o "$v" --no-part
 }
 
