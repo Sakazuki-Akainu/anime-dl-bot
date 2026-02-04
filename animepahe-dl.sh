@@ -1,189 +1,181 @@
 #!/usr/bin/env bash
-# KOYEB VERSION: Node.js Decryption + Cloudscraper Bypass
+# KOYEB ADAPTED VERSION
 
 set -e
 set -u
 
-# Setup Variables
-_HOST="https://animepahe.si"
-_ANIME_URL="$_HOST/anime"
-_API_URL="$_HOST/api"
-_REFERER_URL="https://kwik.cx/"
-_SCRIPT_PATH=$(dirname "$(realpath "$0")")
-_ANIME_LIST_FILE="$_SCRIPT_PATH/anime.list"
-_SOURCE_FILE=".source.json"
-
-# Tools
-_JQ="jq"
-_NODE="node"
-_YTDLP="yt-dlp"
-
-# 🟢 HELPER: Use Python Cloudscraper to get HTML (Bypasses Cloudflare)
-bypass_get() {
-    python3 bypass.py "$1"
-}
-
-# Standard Curl for non-protected pages
+# 🟢 HELPER: Use Python Scraper instead of Curl
 get() {
-    curl -sS -L "$1" \
-        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-        --compressed
+    python3 scraper.py "$1"
 }
 
-search_anime() {
-    # $1: anime name query
+set_var() {
+    _JQ="jq"
+    if [[ -z ${ANIMEPAHE_DL_NODE:-} ]]; then
+        _NODE="node"
+    else
+        _NODE="$ANIMEPAHE_DL_NODE"
+    fi
+    _FFMPEG="ffmpeg"
+    _OPENSSL="openssl"
+
+    _HOST="https://animepahe.si"
+    _ANIME_URL="$_HOST/anime"
+    _API_URL="$_HOST/api"
+    _REFERER_URL="https://kwik.cx/"
+
+    _SCRIPT_PATH=$(dirname "$(realpath "$0")")
+    _ANIME_LIST_FILE="$_SCRIPT_PATH/anime.list"
+    _SOURCE_FILE=".source.json"
+}
+
+set_args() {
+    _PARALLEL_JOBS=1
+    while getopts ":hlda:s:e:r:t:o:" opt; do
+        case $opt in
+            a) _INPUT_ANIME_NAME="$OPTARG" ;;
+            s) _ANIME_SLUG="$OPTARG" ;;
+            e) _ANIME_EPISODE="$OPTARG" ;;
+            l) _LIST_LINK_ONLY=true ;;
+            r) _ANIME_RESOLUTION="$OPTARG" ;;
+            t) _PARALLEL_JOBS="$OPTARG" ;;
+            o) _ANIME_AUDIO="$OPTARG" ;;
+            d) _DEBUG_MODE=true; set -x ;;
+            h) echo "Usage info..." && exit 0 ;;
+            \?) echo "Invalid option" && exit 1 ;;
+        esac
+    done
+}
+
+print_info() { echo "[INFO] $1"; }
+print_warn() { echo "[WARNING] $1"; }
+print_error() { echo "[ERROR] $1"; exit 1; }
+
+download_anime_list() {
+    get "$_ANIME_URL" | grep "/anime/" | sed -E 's/.*anime\//[/;s/" title="/] /;s/\">.*/   /;s/" title/]/' > "$_ANIME_LIST_FILE"
+}
+
+search_anime_by_name() {
     local d
     d="$(get "$_HOST/api?m=search&q=${1// /%20}")"
-    # Return the first result's session ID and title
-    echo "$d" | "$_JQ" -r '.data[0] | "\(.session)|\(.title)"'
+    local n
+    n=$(echo "$d" | "$_JQ" -r '.total')
+    
+    if [[ "$n" == "0" || -z "$n" ]]; then
+        echo ""
+    else
+        # 🟢 CHANGED: Automatically pick the first result (No interactive FZF)
+        echo "$d" | "$_JQ" -r '.data[0] | "[\(.session)] \(.title)   "' | awk -F'] ' '{print $2}'
+    fi
 }
 
-get_episode_page() {
-    # $1: session_id, $2: page
+get_episode_list() {
     get "${_API_URL}?m=release&id=${1}&sort=episode_asc&page=${2}"
 }
 
-# Find the Episode Session ID
-get_episode_session() {
-    # $1: anime_session, $2: episode_number
-    # We loop through pages to find the episode (simplified)
-    local page=1
-    local last_page=1
-    local data
-    
-    # Check first page
-    data=$(get_episode_page "$1" "$page")
-    last_page=$(echo "$data" | "$_JQ" -r '.last_page')
-    
-    # Quick check in page 1
-    local ep_session
-    ep_session=$(echo "$data" | "$_JQ" -r ".data[] | select(.episode==\"$2\") | .session")
-    
-    if [[ -n "$ep_session" ]]; then
-        echo "$ep_session"
-        return
-    fi
+download_source() {
+    local d p n
+    mkdir -p "$_SCRIPT_PATH/$_ANIME_NAME"
+    d="$(get_episode_list "$_ANIME_SLUG" "1")"
+    p=$(echo "$d" | "$_JQ" -r '.last_page')
 
-    # If not in page 1, check others
-    if [[ "$last_page" -gt 1 ]]; then
-        for i in $(seq 2 "$last_page"); do
-            data=$(get_episode_page "$1" "$i")
-            ep_session=$(echo "$data" | "$_JQ" -r ".data[] | select(.episode==\"$2\") | .session")
-            if [[ -n "$ep_session" ]]; then
-                echo "$ep_session"
-                return
-            fi
+    if [[ "$p" != "null" && "$p" -gt "1" ]]; then
+        for i in $(seq 2 "$p"); do
+            n="$(get_episode_list "$_ANIME_SLUG" "$i")"
+            d="$(echo "$d $n" | "$_JQ" -s '.[0].data + .[1].data | {data: .}')"
         done
     fi
+    echo "$d" > "$_SCRIPT_PATH/$_ANIME_NAME/$_SOURCE_FILE"
 }
 
-get_kwik_link() {
-    # $1: anime_slug, $2: ep_session
-    # Get the player page
-    local html
-    html=$(get "${_HOST}/play/${1}/${2}")
+get_episode_link() {
+    local s o l r=""
+    s=$("$_JQ" -r '.data[] | select((.episode | tonumber) == ($num | tonumber)) | .session' --arg num "$1" < "$_SCRIPT_PATH/$_ANIME_NAME/$_SOURCE_FILE")
+    [[ "$s" == "" ]] && print_warn "Episode $1 not found!" && return
     
-    # Extract Kwik Link for 360p (or fallback)
-    local link
-    # Try to find 360p specifically
-    link=$(echo "$html" | grep 'data-resolution="360"' | grep -o 'https://kwik.cx[^"]*')
+    o="$(get "${_HOST}/play/${_ANIME_SLUG}/${s}")"
     
-    # Fallback to any Kwik link if 360p missing
-    if [[ -z "$link" ]]; then
-        link=$(echo "$html" | grep -o 'https://kwik.cx[^"]*' | head -n 1)
-    fi
-    echo "$link"
-}
+    l="$(echo "$o" | grep \<button | grep data-src | sed -E 's/data-src="/\n/g' | grep 'data-av1="0"')"
 
-extract_m3u8() {
-    # $1: Kwik Link
-    # 🟢 USE PYTHON BYPASS HERE
-    local html
-    html=$(bypass_get "$1")
-
-    # Extract the obfuscated JS
-    local js
-    js=$(echo "$html" | grep "<script>eval(" | awk -F 'script>' '{print $2}' | sed -E 's/document/process/g; s/querySelector/exit/g; s/eval\(/console.log\(/g')
-
-    if [[ -z "$js" ]]; then
-        echo "ERROR: Could not find JS" >&2
-        echo "$html" >&2
-        return 1
+    if [[ -n "${_ANIME_RESOLUTION:-}" ]]; then
+        r="$(grep 'data-resolution="'"$_ANIME_RESOLUTION"'"' <<< "${r:-$l}")"
     fi
 
-    # Use Node to de-obfuscate
-    local decoded
-    decoded=$("$_NODE" -e "$js")
-
-    # Extract the .m3u8 link
-    echo "$decoded" | grep -o "https://.*\.m3u8"
+    if [[ -z "${r:-}" ]]; then
+        # Fallback to whatever is available if resolution not matches
+        grep kwik <<< "$l" | tail -1 | grep kwik | awk -F '"' '{print $1}'
+    else
+        awk -F '" ' '{print $1}' <<< "$r" | tail -1
+    fi
 }
+
+get_playlist_link() {
+    local s l
+    # Use python scraper to bypass cloudflare on Kwik
+    s="$(get "$1")"
+    
+    # Extract JS
+    local js_extract
+    js_extract=$(echo "$s" | grep "<script>eval(" | awk -F 'script>' '{print $2}'| sed -E 's/document/process/g' | sed -E 's/querySelector/exit/g' | sed -E 's/eval\(/console.log\(/g')
+    
+    # Run Node to decode
+    l="$("$_NODE" -e "$js_extract" | grep 'source=' | sed -E "s/.m3u8';.*/.m3u8/" | sed -E "s/.*const source='//")"
+    echo "$l"
+}
+
+download_episode() {
+    local num="$1" l pl v
+    v="$_SCRIPT_PATH/${_ANIME_NAME}/${_ANIME_NAME} - Episode ${num}.mp4"
+    
+    l=$(get_episode_link "$num")
+    [[ "$l" != *"/"* ]] && print_warn "Link error!" && return
+    
+    pl=$(get_playlist_link "$l")
+    [[ -z "${pl:-}" ]] && print_warn "Playlist error!" && return
+
+    print_info "Downloading Episode $1..."
+    
+    # Use FFmpeg to download the m3u8 stream
+    "$_FFMPEG" -headers "Referer: $_REFERER_URL" -i "$pl" -c copy -y "$v"
+}
+
+download_episodes() {
+    local e="$1"
+    download_episode "$e"
+}
+
+remove_slug() { awk -F'] ' '{print $2}'; }
+get_slug_from_name() { grep "] $1" "$_ANIME_LIST_FILE" | tail -1 | awk -F']' '{print $1}' | sed -E 's/^\[//'; }
 
 main() {
-    local anime_name=""
-    local episode=""
+    set_args "$@"
+    set_var
     
-    # Parse Args
-    while getopts ":a:e:r:" opt; do
-        case $opt in
-            a) anime_name="$OPTARG" ;;
-            e) episode="$OPTARG" ;;
-            *) ;;
-        esac
-    done
-
-    echo "[INFO] Searching for: $anime_name"
-    local search_res
-    search_res=$(search_anime "$anime_name")
-    
-    local anime_session="${search_res%%|*}"
-    local anime_title="${search_res#*|}"
-    
-    if [[ "$anime_session" == "null" || -z "$anime_session" ]]; then
-        echo "[ERROR] Anime not found"
-        exit 1
-    fi
-    
-    echo "[INFO] Found: $anime_title ($anime_session)"
-    
-    echo "[INFO] Finding Episode $episode..."
-    local ep_session
-    ep_session=$(get_episode_session "$anime_session" "$episode")
-    
-    if [[ -z "$ep_session" ]]; then
-        echo "[ERROR] Episode $episode not found"
-        exit 1
+    # 🟢 Auto-Search (Non-Interactive)
+    if [[ -n "${_INPUT_ANIME_NAME:-}" ]]; then
+        print_info "Searching for: $_INPUT_ANIME_NAME"
+        search_res=$(search_anime_by_name "$_INPUT_ANIME_NAME")
+        
+        if [[ -z "$search_res" ]]; then
+            print_error "Anime not found"
+        fi
+        
+        # Manually extract Slug from the first result found
+        _ANIME_NAME="$search_res"
+        # We need to re-download list to find slug if searching
+        download_anime_list
+        _ANIME_SLUG="$(get_slug_from_name "$_ANIME_NAME")"
     fi
 
-    echo "[INFO] Getting Stream Link..."
-    # The slug for play url is actually the anime_session in API v2 context usually, 
-    # but let's assume the session ID works for the URL construction.
-    # Note: AnimePahe URL structure: /play/{anime_uuid}/{episode_session}
-    
-    local kwik_link
-    kwik_link=$(get_kwik_link "$anime_session" "$ep_session")
-    
-    if [[ -z "$kwik_link" ]]; then
-        echo "[ERROR] Could not find Kwik Link"
-        exit 1
-    fi
-    echo "[INFO] Kwik Link: $kwik_link"
-    
-    echo "[INFO] Bypassing Cloudflare & Decrypting..."
-    local stream_url
-    stream_url=$(extract_m3u8 "$kwik_link")
-    
-    if [[ -z "$stream_url" ]]; then
-        echo "[ERROR] Failed to extract m3u8"
-        exit 1
+    if [[ -z "$_ANIME_SLUG" ]]; then
+        print_error "Slug not found!"
     fi
     
-    echo "[INFO] Stream URL: $stream_url"
+    _ANIME_NAME_CLEAN="${_ANIME_NAME//[^a-zA-Z0-9]/_}"
+    _ANIME_NAME="$_ANIME_NAME_CLEAN"
     
-    local filename="${anime_title} - Episode ${episode}.mp4"
-    
-    # Download with yt-dlp (uses aria2 automatically via config)
-    "$_YTDLP" "$stream_url" -o "$filename"
+    download_source
+    download_episodes "$_ANIME_EPISODE"
 }
 
 main "$@"
