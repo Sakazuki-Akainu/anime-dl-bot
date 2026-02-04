@@ -1,21 +1,25 @@
 FROM python:3.10-slim
 
-# Install system dependencies (NO ARIA2)
+# Install Aria2, FFmpeg, Node, and tools
 RUN apt-get update && apt-get install -y \
-    curl jq ffmpeg nodejs npm \
+    curl jq fzf aria2 ffmpeg nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy and install python requirements
+# Install Python libs
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all your code files
+# Copy scripts
 COPY . .
 
-# Make the shell script executable
+# Make script executable
 RUN chmod +x animepahe-dl.sh
 
-# Start the bot
+# 🚀 INJECT ARIA2 CONFIG FOR MAX SPEED 🚀
+RUN mkdir -p /root/.config/yt-dlp && \
+    echo '--external-downloader aria2c\n--external-downloader-args "-x 16 -k 1M"' > /root/.config/yt-dlp/config
+
+# Start Bot
 CMD ["python", "main.py"]
