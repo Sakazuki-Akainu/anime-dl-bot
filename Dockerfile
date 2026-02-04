@@ -1,7 +1,6 @@
 FROM python:3.10-slim
 
 # Install system dependencies (NO ARIA2)
-# We need nodejs for the animepahe script to work
 RUN apt-get update && apt-get install -y \
     curl jq ffmpeg nodejs npm \
     && rm -rf /var/lib/apt/lists/*
