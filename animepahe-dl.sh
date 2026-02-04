@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KOYEB VERSION: 360p FORCED + DEBUGGING
+# KOYEB VERSION: CLOUDFLARE BYPASS + 360p
 
 set -e
 set -u
@@ -25,7 +25,7 @@ set_var() {
 
 set_args() {
     _PARALLEL_JOBS=1
-    _ANIME_RESOLUTION="360"
+    _ANIME_RESOLUTION="360" # Forced 360p
     
     while getopts ":hlda:s:e:r:t:o:" opt; do
         case $opt in
@@ -48,6 +48,7 @@ print_warn() { printf "%b\n" "\033[33m[WARNING]\033[0m $1" >&2; }
 print_info() { printf "%b\n" "\033[32m[INFO]\033[0m $1" >&2; }
 command_not_found() { print_error "$1 command not found!"; }
 
+# 🟢 UPDATE: Added Real User-Agent to fool Cloudflare
 get() {
     "$_CURL" -sS -L "$1" \
         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
@@ -90,41 +91,40 @@ get_episode_link() {
     local s o l r=""
     s=$("$_JQ" -r '.data[] | select((.episode | tonumber) == ($num | tonumber)) | .session' --arg num "$1" < "$_SCRIPT_PATH/$_ANIME_NAME/$_SOURCE_FILE")
     [[ "$s" == "" ]] && print_warn "Episode $1 not found!" && return
-    o="$("$_CURL" --compressed -sSL -H "cookie: $_COOKIE" "${_HOST}/play/${_ANIME_SLUG}/${s}")"
-    l="$(grep \<button <<< "$o" | grep data-src | sed -E 's/data-src="/\n/g' | grep 'data-av1="0"')"
-    if [[ -n "${_ANIME_AUDIO:-}" ]]; then r="$(grep 'data-audio="'"$_ANIME_AUDIO"'"' <<< "$l")"; fi
-    if [[ -n "${_ANIME_RESOLUTION:-}" ]]; then r="$(grep 'data-resolution="'"$_ANIME_RESOLUTION"'"' <<< "${r:-$l}")"; fi
-    if [[ -z "${r:-}" ]]; then grep kwik <<< "$l" | tail -1 | grep kwik | awk -F '"' '{print $1}'; else awk -F '" ' '{print $1}' <<< "$r" | tail -1; fi
-}
-
-get_playlist_link() {
-    local s l
-    # Attempt to fetch page
-    local page_content
-    page_content="$("$_CURL" --compressed -sS -H "Referer: $_REFERER_URL" -H "cookie: $_COOKIE" "$1")"
     
-    # 🔴 DEBUG PRINT: If grep fails, we will see why in logs
-    if ! echo "$page_content" | grep -q "<script>eval("; then
-        echo "[DEBUG] FAILED TO FIND SCRIPT TAG. Page Content Start:" >&2
-        echo "$page_content" | head -n 10 >&2
+    # Get the player page
+    o="$(get "${_HOST}/play/${_ANIME_SLUG}/${s}")"
+    
+    # Extract the Kwik link
+    l="$(grep \<button <<< "$o" | grep data-src | sed -E 's/data-src="/\n/g' | grep 'data-av1="0"')"
+    
+    # Resolution filter
+    if [[ -n "${_ANIME_RESOLUTION:-}" ]]; then 
+        r="$(grep 'data-resolution="'"$_ANIME_RESOLUTION"'"' <<< "${r:-$l}")"
     fi
-
-    s="$(echo "$page_content" | grep "<script>eval(" | awk -F 'script>' '{print $2}'| sed -E 's/document/process/g' | sed -E 's/querySelector/exit/g' | sed -E 's/eval\(/console.log\(/g')"
-    l="$("$_NODE" -e "$s" | grep 'source=' | sed -E "s/.m3u8';.*/.m3u8/" | sed -E "s/.*const source='//")"
-    echo "$l"
+    
+    if [[ -z "${r:-}" ]]; then 
+        # Fallback if specific resolution not found, get 360p or whatever is there
+        grep kwik <<< "$l" | tail -1 | grep kwik | awk -F '"' '{print $1}'
+    else 
+        awk -F '" ' '{print $1}' <<< "$r" | tail -1
+    fi
 }
 
 download_episode() {
-    local num="$1" l pl v
+    local num="$1" l v
     v="$_SCRIPT_PATH/${_ANIME_NAME}/${_ANIME_NAME} - Episode ${num}.mp4"
-    l=$(get_episode_link "$num")
-    [[ "$l" != *"/"* ]] && print_warn "Link error! (Could not find session URL)" && return
     
-    pl=$(get_playlist_link "$l")
-    [[ -z "${pl:-}" ]] && print_warn "Playlist error! (Could not extract m3u8)" && return
+    # 1. Get the Kwik Link (e.g., https://kwik.cx/e/...)
+    l=$(get_episode_link "$num")
+    [[ "$l" != *"/"* ]] && print_warn "Link error! Could not find Kwik Link." && return
+    
+    print_info "Found Link: $l"
+    print_info "Passing directly to yt-dlp to bypass Cloudflare..."
 
-    print_info "Downloading Episode $1 (FAST / Aria2)..."
-    "$_YTDLP" --referer "$_REFERER_URL" "$pl" -o "$v" --no-part
+    # 🟢 BYPASS FIX: We do NOT extract the m3u8 manually. 
+    # We pass the Kwik link directly to yt-dlp. It handles the challenges.
+    "$_YTDLP" "$l" -o "$v" --no-part
 }
 
 download_episodes() {
