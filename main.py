@@ -9,23 +9,18 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 
 # --- 1. CONFIGURATION ---
-try:
-    API_ID = int(os.environ.get('API_ID', 0))
-    API_HASH = os.environ.get('API_HASH', '')
-    BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
-    
-    # Optional Channels
-    CHANNEL_1 = int(os.environ.get('CHANNEL_1')) if os.environ.get('CHANNEL_1') else None
-    CHANNEL_2 = int(os.environ.get('CHANNEL_2')) if os.environ.get('CHANNEL_2') else None
-    CHANNEL_3 = int(os.environ.get('CHANNEL_3')) if os.environ.get('CHANNEL_3') else None
-except Exception as e:
-    print(f"❌ Config Error: {e}")
-    raise SystemExit
+# Koyeb uses Environment Variables
+API_ID = int(os.environ.get('API_ID', 0))
+API_HASH = os.environ.get('API_HASH', '')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+
+# Channel IDs from Env Vars
+CHANNEL_1 = int(os.environ.get('CHANNEL_1')) if os.environ.get('CHANNEL_1') else None
+CHANNEL_2 = int(os.environ.get('CHANNEL_2')) if os.environ.get('CHANNEL_2') else None
 
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 ACTIVE_TASKS = {}
-SETTINGS = {"ch1": False, "ch2": False, "ch3": True}
 
 app = Client(
     "anime_bot",
@@ -60,54 +55,55 @@ async def consume_stream(process):
     while True:
         line = await process.stdout.readline()
         if not line: break
-        # Print logs to Railway console
         print(f"[SHELL] {line.decode().strip()}")
 
 # --- 4. COMMANDS ---
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
-    await message.reply("🤖 **360p Anime Downloader**\nUsage: `/dl -a \"Anime Name\" -e 1`")
+    await message.reply("🤖 **Koyeb 360p Anime Bot Ready!**\nUsage: `/dl -a \"Anime Name\" -e 1`")
 
 @app.on_message(filters.command("dl"))
 async def dl_cmd(client, message):
     chat_id = message.chat.id
-    if chat_id in ACTIVE_TASKS: return await message.reply("⚠️ A task is already running.")
+    if chat_id in ACTIVE_TASKS: return await message.reply("⚠️ Busy. Wait for current task.")
 
     cmd_text = message.text[4:]
-    if not cmd_text: return await message.reply("❌ Usage: `/dl -a \"Title\" -e 1`")
-
-    # Extract info
     ep_match = re.search(r'-e\s+([\d,-]+)', cmd_text)
     name_match = re.search(r'-a\s+["\']([^"\']+)["\']', cmd_text)
     
-    if not ep_match: return await message.reply("❌ Missing Episode Number (-e)")
+    if not ep_match or not name_match:
+        return await message.reply("Usage: `/dl -a \"One Piece\" -e 1000`")
     
-    anime_query = name_match.group(1) if name_match else "anime"
+    anime_query = name_match.group(1)
     ep_num = ep_match.group(1)
     
     status_msg = await message.reply("⏳ **Searching & Initializing (360p)...**")
+    ACTIVE_TASKS[chat_id] = True
     
-    # Get Info
+    # Get Anime Info
     anime_info = get_anime_details(anime_query)
     if not anime_info:
         anime_info = {"title": anime_query, "native": "", "duration": "Unknown", "image": None}
 
     caption_template = (
-        f"**{anime_info['title']}**\n"
-        f"Quality: 360p (Forced)\n"
+        f"**{anime_info['title']}** | {anime_info['native']}\n"
+        f"Quality: 360p\n"
         f"Duration: {anime_info['duration']}\n"
     )
 
-    ACTIVE_TASKS[chat_id] = {"status": "running"}
-    
-    # Send Thumbnail if enabled
+    # 1. POST THE IMAGE FIRST
     try:
         if anime_info['image']: 
-            await client.send_photo(chat_id, photo=anime_info['image'], caption=caption_template)
+            sent_post = await client.send_photo(chat_id, photo=anime_info['image'], caption=caption_template)
+            
+            # Forward Post to Channels
+            for ch_id in [CHANNEL_1, CHANNEL_2]:
+                if ch_id:
+                    try: await sent_post.copy(ch_id)
+                    except: pass
     except: pass
 
-    # --- EXECUTE SCRIPT (Forced 360p) ---
-    # We pass -r 360 explicitly to the shell script
+    # 2. DOWNLOAD (Forced 360p)
     current_cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} -r 360 2>&1"
 
     process = await asyncio.create_subprocess_shell(
@@ -120,7 +116,7 @@ async def dl_cmd(client, message):
     await consume_stream(process)
     await process.wait()
 
-    # Find the File
+    # 3. UPLOAD FILE
     mp4s = glob.glob("**/*.mp4", recursive=True)
     
     if not mp4s:
@@ -132,16 +128,16 @@ async def dl_cmd(client, message):
     await status_msg.edit_text("🚀 **Uploading 360p Video...**")
 
     try:
-        sent = await client.send_document(
+        sent_vid = await client.send_document(
             chat_id, 
             file_to_up, 
             caption=f"✅ **{anime_info['title']} - Ep {ep_num}** [360p]"
         )
         
-        # Forward to channels if configured
-        for ch_id in [CHANNEL_1, CHANNEL_2, CHANNEL_3]:
+        # Forward Video to Channels
+        for ch_id in [CHANNEL_1, CHANNEL_2]:
             if ch_id:
-                try: await sent.copy(ch_id)
+                try: await sent_vid.copy(ch_id)
                 except: pass
 
     except Exception as e:
@@ -157,7 +153,7 @@ async def dl_cmd(client, message):
     await status_msg.delete()
 
 async def main():
-    print("🤖 Bot Starting on Railway...")
+    print("🤖 Bot Starting on Koyeb...")
     await app.start()
     await idle()
 
