@@ -3,3 +3,4 @@ tgcrypto
 requests
 yt-dlp
 aiohttp
+cloudscraper
