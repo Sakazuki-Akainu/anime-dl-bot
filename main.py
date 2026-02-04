@@ -6,15 +6,13 @@ import time
 import re
 import requests
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from aiohttp import web
 
 # --- 1. CONFIGURATION ---
-# Koyeb uses Environment Variables
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 
-# Channel IDs from Env Vars
 CHANNEL_1 = int(os.environ.get('CHANNEL_1')) if os.environ.get('CHANNEL_1') else None
 CHANNEL_2 = int(os.environ.get('CHANNEL_2')) if os.environ.get('CHANNEL_2') else None
 
@@ -30,7 +28,20 @@ app = Client(
     workers=4
 )
 
-# --- 2. JIKAN API (For Info) ---
+# --- 2. HEALTH CHECK SERVER (For Koyeb) ---
+async def health_check(request):
+    return web.Response(text="Bot is Alive and Running!")
+
+async def start_web_server():
+    server = web.Application()
+    server.router.add_get("/", health_check)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    # Koyeb expects port 8080
+    await web.TCPSite(runner, "0.0.0.0", 8080).start()
+    print("🌍 Health Check Server running on Port 8080")
+
+# --- 3. JIKAN API ---
 def get_anime_details(query):
     try:
         url = f"https://api.jikan.moe/v4/anime?q={query}&limit=1"
@@ -50,14 +61,14 @@ def get_anime_details(query):
     except: pass
     return None
 
-# --- 3. HELPERS ---
+# --- 4. HELPERS ---
 async def consume_stream(process):
     while True:
         line = await process.stdout.readline()
         if not line: break
         print(f"[SHELL] {line.decode().strip()}")
 
-# --- 4. COMMANDS ---
+# --- 5. COMMANDS ---
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     await message.reply("🤖 **Koyeb 360p Anime Bot Ready!**\nUsage: `/dl -a \"Anime Name\" -e 1`")
@@ -80,7 +91,6 @@ async def dl_cmd(client, message):
     status_msg = await message.reply("⏳ **Searching & Initializing (360p)...**")
     ACTIVE_TASKS[chat_id] = True
     
-    # Get Anime Info
     anime_info = get_anime_details(anime_query)
     if not anime_info:
         anime_info = {"title": anime_query, "native": "", "duration": "Unknown", "image": None}
@@ -91,19 +101,15 @@ async def dl_cmd(client, message):
         f"Duration: {anime_info['duration']}\n"
     )
 
-    # 1. POST THE IMAGE FIRST
     try:
         if anime_info['image']: 
             sent_post = await client.send_photo(chat_id, photo=anime_info['image'], caption=caption_template)
-            
-            # Forward Post to Channels
             for ch_id in [CHANNEL_1, CHANNEL_2]:
                 if ch_id:
                     try: await sent_post.copy(ch_id)
                     except: pass
     except: pass
 
-    # 2. DOWNLOAD (Forced 360p)
     current_cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} -r 360 2>&1"
 
     process = await asyncio.create_subprocess_shell(
@@ -116,7 +122,6 @@ async def dl_cmd(client, message):
     await consume_stream(process)
     await process.wait()
 
-    # 3. UPLOAD FILE
     mp4s = glob.glob("**/*.mp4", recursive=True)
     
     if not mp4s:
@@ -133,8 +138,6 @@ async def dl_cmd(client, message):
             file_to_up, 
             caption=f"✅ **{anime_info['title']} - Ep {ep_num}** [360p]"
         )
-        
-        # Forward Video to Channels
         for ch_id in [CHANNEL_1, CHANNEL_2]:
             if ch_id:
                 try: await sent_vid.copy(ch_id)
@@ -143,7 +146,6 @@ async def dl_cmd(client, message):
     except Exception as e:
         await message.reply(f"Upload Error: {e}")
 
-    # Cleanup
     try: 
         os.remove(file_to_up)
         shutil.rmtree(os.path.dirname(file_to_up))
@@ -152,10 +154,15 @@ async def dl_cmd(client, message):
     if chat_id in ACTIVE_TASKS: del ACTIVE_TASKS[chat_id]
     await status_msg.delete()
 
+# --- 6. STARTUP ---
 async def main():
     print("🤖 Bot Starting on Koyeb...")
+    # Start the Health Check Server first
+    await start_web_server()
+    # Then start the Bot
     await app.start()
     await idle()
+    await app.stop()
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
