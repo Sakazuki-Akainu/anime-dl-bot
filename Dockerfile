@@ -1,25 +1,22 @@
 FROM python:3.10-slim
 
-# Install system tools required by your .sh script
+# Install system dependencies (NO ARIA2)
+# We need nodejs for the animepahe script to work
 RUN apt-get update && apt-get install -y \
-    curl jq fzf aria2 ffmpeg nodejs npm \
+    curl jq ffmpeg nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python libraries
+# Copy and install python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all files
+# Copy all your code files
 COPY . .
 
-# Set permissions
+# Make the shell script executable
 RUN chmod +x animepahe-dl.sh
 
-# Fast downloader config
-RUN mkdir -p /root/.config/yt-dlp && \
-    echo '--external-downloader aria2c\n--external-downloader-args "-x 16 -k 1M"' > /root/.config/yt-dlp/config
-
-# Launch the bot
+# Start the bot
 CMD ["python", "main.py"]
