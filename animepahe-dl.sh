@@ -53,8 +53,8 @@ set_var() {
 }
 
 set_args() {
-    expr "$*" : ".*--help" > /dev/null && usage
     _PARALLEL_JOBS=1
+    _ANIME_RESOLUTION="360" # This forces 360p as the default
     while getopts ":hlda:s:e:r:t:o:" opt; do
         case $opt in
             a)
