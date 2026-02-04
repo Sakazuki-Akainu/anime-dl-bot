@@ -79,13 +79,13 @@ async def dl_cmd(client, message):
     # Post Image
     try:
         if anime_info and anime_info['image']:
-            sent = await client.send_photo(chat_id, photo=anime_info['image'], caption=f"**{title}**\nQuality: 360p")
+            sent = await client.send_photo(chat_id, photo=anime_info['image'], caption=f"**{title}**\nDuration: {anime_info['duration']}")
             for ch in [CHANNEL_1, CHANNEL_2]:
                 if ch: await sent.copy(ch)
     except: pass
 
-    # Download
-    cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} -r 360 2>&1"
+    # Download (We let the script choose resolution)
+    cmd = f"./animepahe-dl.sh -a \"{anime_query}\" -e {ep_num} 2>&1"
     process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, preexec_fn=os.setsid)
     await consume_stream(process)
     await process.wait()
@@ -97,7 +97,7 @@ async def dl_cmd(client, message):
     else:
         file_path = max(mp4s, key=os.path.getctime)
         await status_msg.edit_text("🚀 Uploading...")
-        sent_vid = await client.send_document(chat_id, file_path, caption=f"**{title} - Ep {ep_num}** [360p]")
+        sent_vid = await client.send_document(chat_id, file_path, caption=f"**{title} - Ep {ep_num}**")
         
         for ch in [CHANNEL_1, CHANNEL_2]:
             if ch: await sent_vid.copy(ch)
